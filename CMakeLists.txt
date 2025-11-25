@@ -3,7 +3,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
 project(grvl-demo)
 
-target_sources(app PRIVATE src/main.cpp)
+target_sources(app PRIVATE src/grvl.cpp)
 
 if(CONFIG_SDCARD_IMAGE)
   find_program(MKE2FS NAMES mke2fs mkfs.ext2 REQUIRED)

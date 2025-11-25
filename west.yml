@@ -1,8 +1,21 @@
 manifest:
   remotes:
-    - name: zephyrproject-rtos
-      url-base: https://github.com/zephyrproject-rtos
+    # - name: zephyrproject-rtos
+    #   url-base: https://github.com/zephyrproject-rtos
+    - name: antmicro
+      url-base: https://github.com/antmicro
   projects:
+    # Fixes romfs file read. For details see
+    # https://github.com/zephyrproject-rtos/zephyr/issues/85013
+    # https://github.com/zephyrproject-rtos/zephyr/pull/96278
     - name: zephyr
-      remote: zephyrproject-rtos
-      revision: v4.2.0
+      remote: antmicro
+      revision: 6d6489c56b5e7d89da761bba3158c56ab51b58a3
+      import:
+        name-allowlist:
+          - cmsis_6
+          - hal_stm32
+    - name: grvl
+      path: modules/grvl
+      remote: antmicro
+      revision: f44220087780cc6d71e1d67ca17b36663f913dcb
