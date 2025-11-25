@@ -6,5 +6,20 @@ module = APP
 module-str = App
 source "subsys/logging/Kconfig.template.log_config"
 
+config SDCARD_IMAGE
+	bool "Generate SD card image"
+	help
+	  Generate an sdcard image with ext2 filesystem using contents of romfs
+
+if SDCARD_IMAGE
+
+config SDCARD_IMAGE_SIZE
+	int "Image size"
+	default 8
+	help
+	  Defines generated sdcard image size (in MB)
+
+endif # SDCARD_IMAGE
+
 endmenu # Application Options
 
