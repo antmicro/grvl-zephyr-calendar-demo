@@ -21,5 +21,19 @@ config SDCARD_IMAGE_SIZE
 
 endif # SDCARD_IMAGE
 
+if BOARD_STM32H747I_DISCO
+
+config GRVL_HEAP_SIZE
+	int "Grvl dedicated heap size"
+	default 8388608
+
+config GRVL_USE_STM32_DMA
+	bool
+	default y
+	select USE_STM32_HAL_DMA2D
+	select USE_STM32_LL_DMA2D
+
+endif # BOARD_STM32H747I_DISCO
+
 endmenu # Application Options
 
