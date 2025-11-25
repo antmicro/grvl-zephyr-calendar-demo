@@ -1,0 +1,10 @@
+source "Kconfig.zephyr"
+
+menu "Application Options"
+
+module = APP
+module-str = App
+source "subsys/logging/Kconfig.template.log_config"
+
+endmenu # Application Options
+
