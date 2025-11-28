@@ -341,11 +341,13 @@ static grvl::gui_callbacks_t grvl_callbacks = {
 	.free = free,
 #endif
 
-	// .gui_printf =
-	// 	[](const char *text, va_list argList) {
-	// 		vprintf(text, argList);
-	// 		printf("\n");
-	// 	},
+#if defined(CONFIG_DEBUG)
+	.gui_printf =
+		[](const char *text, va_list argList) {
+			vprintf(text, argList);
+			printf("\n");
+		},
+#endif
 
 	.mutex_create = grvl_mutex_create,
 	.mutex_lock = grvl_mutex_lock,
