@@ -57,3 +57,7 @@ $ west flash
 ```sh
 $ ./build/zephyr/zephyr.exe
 ```
+
+## License
+The source code for this project is licensed under [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0),
+and the fonts are licensed under [SIL Open Font License 1.1](https://openfontlicense.org).
