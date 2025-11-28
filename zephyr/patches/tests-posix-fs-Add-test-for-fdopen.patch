@@ -1,0 +1,55 @@
+From 1a32f98139fb11ccf8b3cf279e2b0533f7124f24 Mon Sep 17 00:00:00 2001
+From: Jakub Klimczak <jklimczak@internships.antmicro.com>
+Date: Thu, 4 Sep 2025 10:19:28 +0200
+Subject: [PATCH] tests: posix: fs: Add test for fdopen
+
+Add a test to the POSIX filesystem API suite that checks whether fdopen()
+returns a valid value.
+
+Signed-off-by: Jakub Klimczak <jklimczak@internships.antmicro.com>
+---
+ tests/posix/fs/src/test_fs_file.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+diff --git a/tests/posix/fs/src/test_fs_file.c b/tests/posix/fs/src/test_fs_file.c
+index 23496c92b8c22..be52a3df625bf 100644
+--- a/tests/posix/fs/src/test_fs_file.c
++++ b/tests/posix/fs/src/test_fs_file.c
+@@ -28,6 +28,18 @@ static int test_file_open(void)
+ 	return TC_PASS;
+ }
+ 
++static int test_file_fdopen(void)
++{
++	FILE *fp = fdopen(file, "r");
++
++	if (fp == NULL) {
++		TC_ERROR("Failed associating file descriptor %d with FILE, errno=%d\n", file,
++			 errno);
++		return TC_FAIL;
++	}
++	return TC_PASS;
++}
++
+ int test_file_write(void)
+ {
+ 	ssize_t brw;
+@@ -197,6 +209,18 @@ ZTEST(posix_fs_file_test, test_fs_open)
+ 	zassert_true(test_file_open() == TC_PASS);
+ }
+ 
++/**
++ * @brief Test for POSIX fdopen API
++ *
++ * @details Test converts file descriptor to FILE * through POSIX fdopen API.
++ */
++ZTEST(posix_fs_file_test, test_fs_fdopen)
++{
++	/* FIXME: restructure tests as per #46897 */
++	zassert_true(test_file_open() == TC_PASS);
++	zassert_true(test_file_fdopen() == TC_PASS);
++}
++
+ /**
+  * @brief Test for POSIX write API
+  *

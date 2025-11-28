@@ -1,0 +1,48 @@
+checkout-command: git checkout .
+clean-command: git clean -d -f -x
+patches:
+- author: Chris Friedt
+  date: '2024-12-24'
+  email: cfriedt@tenstorrent.com
+  merge-pr: https://github.com/zephyrproject-rtos/zephyr/pull/96278
+  merge-status: false
+  module: zephyr
+  path: zvfs-improve-libc-FILE-to-integer-fd-abstraction.patch
+  sha256sum: bf938fa7c6f895d675d042de419398df65426cd396181564fde20f26fbd9ef61
+  upstreamable: true
+- author: Chris Friedt
+  date: '2025-05-31'
+  email: cfriedt@tenstorrent.com
+  merge-pr: https://github.com/zephyrproject-rtos/zephyr/pull/96278
+  merge-status: false
+  module: zephyr
+  path: tests-posix-add-POSIX-DEVICE-IO-testsuite.patch
+  sha256sum: 3918bc68112f01beeec6a532627b68eaceabe164c8cbb555263e90b29002f3ed
+  upstreamable: true
+- author: Jakub Klimczak
+  date: '2025-09-04'
+  email: jklimczak@internships.antmicro.com
+  merge-pr: https://github.com/zephyrproject-rtos/zephyr/pull/96278
+  merge-status: false
+  module: zephyr
+  path: tests-posix-fs-Add-test-for-fdopen.patch
+  sha256sum: eac240369c644cc195b0ab9d77d29cf79026877d5520ec2b81d0daaa5077019d
+  upstreamable: true
+- author: Jakub Klimczak
+  date: '2025-09-11'
+  email: jklimczak@internships.antmicro.com
+  merge-pr: https://github.com/zephyrproject-rtos/zephyr/pull/96278
+  merge-status: false
+  module: zephyr
+  path: lib-Implement-POSIX-read-write-poll-etc-on-stdio.patch
+  sha256sum: 511d886551c732d612451c2978c1636ffa6702a94ba3998e8f524b067f04d54e
+  upstreamable: true
+- author: Jakub Klimczak
+  date: '2025-09-11'
+  email: jklimczak@internships.antmicro.com
+  merge-pr: https://github.com/zephyrproject-rtos/zephyr/pull/96278
+  merge-status: false
+  module: zephyr
+  path: tests-posix-device-io-Update-tests-for-working-select-poll.patch
+  sha256sum: 76c8ce584f6c9e82d6b444a9c5c37e7ea38fb26b07be5dde58292e688163ccd7
+  upstreamable: true

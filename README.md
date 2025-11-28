@@ -38,6 +38,7 @@ $ git clone https://github.com/antmicro/grvl-zephyr-calendar-demo
 $ cd grvl-zephyr-calendar-demo
 $ west init -l .
 $ west update
+$ west patch apply
 ```
 
 ### Building

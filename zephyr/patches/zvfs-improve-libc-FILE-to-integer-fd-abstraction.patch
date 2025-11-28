@@ -1,0 +1,830 @@
+From e606b23829beeddf50c3fbe403af20823ff4143b Mon Sep 17 00:00:00 2001
+From: Chris Friedt <cfriedt@tenstorrent.com>
+Date: Tue, 24 Dec 2024 12:44:46 -0500
+Subject: [PATCH] zvfs: improve libc FILE to integer fd abstraction
+
+Previously, there was an implicit assumption that Zephyr's
+internal struct fd_entry * was synonymous with FILE * from
+the C library.
+
+This is generally not the case and aliasing these two
+distinct types was preventing a fair bit of functionality
+from Just Working - namely stdio function calls like
+fgets() and fopen(). The problem count be seen directly
+when trying to use a function like zvfs_fdopen().
+
+Instead of aliasing the two types, require that all Zephyr
+C libraries provide
+
+1. FILE *z_libc_file_alloc(int fd, const char *mode)
+   Allocate and populate the required fields of a FILE object
+
+2. int z_libc_file_get_fd(FILE *fp)
+   Convert a FILE* object to an integer file descriptor.
+
+For Picolibc and Newlib-based C libraries, these functions
+set and get the integer file descriptor from a field of the
+internal FILE object representation.
+
+For the minimal C library, these functions convert between
+array index and struct fd_entry pointers.
+
+Includes changes necessary for tests to still pass.
+
+Signed-off-by: Chris Friedt <cfriedt@tenstorrent.com>
+Co-authored-by: Jakub Klimczak <jklimczak@internships.antmicro.com>
+Signed-off-by: Jakub Klimczak <jklimczak@internships.antmicro.com>
+---
+ include/zephyr/posix/unistd.h         |  2 +
+ include/zephyr/sys/fdtable.h          | 32 ++++++----
+ lib/libc/common/CMakeLists.txt        |  1 +
+ lib/libc/common/Kconfig               |  8 ++-
+ lib/libc/common/source/stdio/fclose.c | 25 ++++++++
+ lib/libc/newlib/CMakeLists.txt        |  2 +
+ lib/libc/newlib/Kconfig               |  8 +++
+ lib/libc/newlib/libc-hooks.c          |  6 ++
+ lib/libc/newlib/zvfs_libc.c           | 82 ++++++++++++++++++++++++++
+ lib/libc/picolibc/CMakeLists.txt      |  2 +
+ lib/libc/picolibc/Kconfig             |  8 +++
+ lib/libc/picolibc/stdio.c             | 22 ++++++-
+ lib/libc/picolibc/zvfs_libc.c         | 85 +++++++++++++++++++++++++++
+ lib/os/fdtable.c                      | 60 +++++++++++++++++--
+ lib/os/zvfs/CMakeLists.txt            |  1 +
+ lib/os/zvfs/Kconfig                   | 20 +++++++
+ lib/os/zvfs/zvfs_libc_file.c          | 85 +++++++++++++++++++++++++++
+ lib/posix/options/device_io.c         |  2 +-
+ lib/posix/options/posix_clock.h       | 12 ++++
+ tests/lib/c_lib/thrd/prj.conf         |  2 +-
+ tests/lib/c_lib/thrd/testcase.yaml    |  2 +-
+ 21 files changed, 446 insertions(+), 21 deletions(-)
+ create mode 100644 lib/libc/common/source/stdio/fclose.c
+ create mode 100644 lib/libc/newlib/zvfs_libc.c
+ create mode 100644 lib/libc/picolibc/zvfs_libc.c
+ create mode 100644 lib/os/zvfs/zvfs_libc_file.c
+
+diff --git a/include/zephyr/posix/unistd.h b/include/zephyr/posix/unistd.h
+index 2f07aa636e181..ddf65b97d7720 100644
+--- a/include/zephyr/posix/unistd.h
++++ b/include/zephyr/posix/unistd.h
+@@ -25,7 +25,9 @@ extern "C" {
+ /* File related operations */
+ int close(int file);
+ ssize_t write(int file, const void *buffer, size_t count);
++ssize_t pwrite(int file, const void *buffer, size_t count, off_t offset);
+ ssize_t read(int file, void *buffer, size_t count);
++ssize_t pread(int fd, void *buf, size_t count, off_t offset);
+ off_t lseek(int file, off_t offset, int whence);
+ int fsync(int fd);
+ int ftruncate(int fd, off_t length);
+diff --git a/include/zephyr/sys/fdtable.h b/include/zephyr/sys/fdtable.h
+index d4153828fbb2d..50ca50b50b37f 100644
+--- a/include/zephyr/sys/fdtable.h
++++ b/include/zephyr/sys/fdtable.h
+@@ -14,6 +14,20 @@
+ #include <zephyr/kernel.h>
+ #include <zephyr/sys/util.h>
+ 
++/* FIXME: use k_off_t and k_ssize_t to avoid the POSIX->Zephyr->POSIX dependency cycle */
++#ifdef CONFIG_NEWLIB_LIBC
++#ifndef _OFF_T_DECLARED
++typedef _off_t off_t;
++#define _OFF_T_DECLARED
++#endif
++#ifndef _SSIZE_T_DECLARED
++typedef _ssize_t ssize_t;
++#define _SSIZE_T_DECLARED
++#endif
++#endif
++
++#include <stdio.h>
++
+ #ifdef CONFIG_PICOLIBC
+ #define ZVFS_O_APPEND 0x0400
+ #define ZVFS_O_CREAT  0x0040
+@@ -60,18 +74,6 @@
+ extern "C" {
+ #endif
+ 
+-/* FIXME: use k_off_t and k_ssize_t to avoid the POSIX->Zephyr->POSIX dependency cycle */
+-#ifdef CONFIG_NEWLIB_LIBC
+-#ifndef _OFF_T_DECLARED
+-typedef __off_t off_t;
+-#define _OFF_T_DECLARED
+-#endif
+-#ifndef _SSIZE_T_DECLARED
+-typedef _ssize_t ssize_t;
+-#define _SSIZE_T_DECLARED
+-#endif
+-#endif
+-
+ /**
+  * File descriptor virtual method table.
+  * Currently all operations beyond read/write/close go thru ioctl method.
+@@ -261,6 +263,12 @@ __syscall int zvfs_select(int nfds, struct zvfs_fd_set *ZRESTRICT readfds,
+ 			  struct zvfs_fd_set *ZRESTRICT errorfds,
+ 			  const struct timespec *ZRESTRICT timeout, const void *ZRESTRICT sigmask);
+ 
++void zvfs_libc_file_alloc_cb(int fd, const char *mode, FILE *fp);
++int zvfs_libc_file_alloc(int fd, const char *mode, FILE **fp, k_timeout_t timeout);
++void zvfs_libc_file_free(FILE *fp);
++int zvfs_libc_file_get_fd(FILE *fp);
++FILE *zvfs_libc_file_from_fd(int fd);
++
+ /**
+  * Request codes for fd_op_vtable.ioctl().
+  *
+diff --git a/lib/libc/common/CMakeLists.txt b/lib/libc/common/CMakeLists.txt
+index ed3d28fe5a622..5357c0903da43 100644
+--- a/lib/libc/common/CMakeLists.txt
++++ b/lib/libc/common/CMakeLists.txt
+@@ -20,6 +20,7 @@ zephyr_library_sources_ifdef(CONFIG_COMMON_LIBC_THRD
+     source/thrd/tss.c
+     )
+ zephyr_library_sources_ifdef(CONFIG_COMMON_LIBC_REMOVE source/stdio/remove.c)
++zephyr_library_sources_ifdef(CONFIG_COMMON_LIBC_FCLOSE source/stdio/fclose.c)
+ 
+ # Prevent compiler from optimizing calloc into an infinite recursive call
+ zephyr_library_compile_options($<TARGET_PROPERTY:compiler,no_builtin_malloc>)
+diff --git a/lib/libc/common/Kconfig b/lib/libc/common/Kconfig
+index c4ac88dbab1cd..b98faaef6ac1f 100644
+--- a/lib/libc/common/Kconfig
++++ b/lib/libc/common/Kconfig
+@@ -109,7 +109,7 @@ config COMMON_LIBC_THRD
+ 	depends on DYNAMIC_THREAD
+ 	# Note: the POSIX_API dependency is only necessary until common elements
+ 	# of C11 threads and POSIX API can be abstracted out to a common library.
+-	depends on POSIX_API
++	depends on POSIX_THREADS
+ 	default y
+ 	help
+ 	  Common implementation of C11 <threads.h> API.
+@@ -120,3 +120,9 @@ config COMMON_LIBC_REMOVE
+ 	default y if FILE_SYSTEM
+ 	help
+ 	  Common implementation of remove().
++
++config COMMON_LIBC_FCLOSE
++	bool "Common C library fclose"
++	default y if ZVFS && !MINIMAL_LIBC
++	help
++	  Enable the common C library implementation of fclose()
+diff --git a/lib/libc/common/source/stdio/fclose.c b/lib/libc/common/source/stdio/fclose.c
+new file mode 100644
+index 0000000000000..11c8e704f0129
+--- /dev/null
++++ b/lib/libc/common/source/stdio/fclose.c
+@@ -0,0 +1,25 @@
++/*
++ * Copyright (c) 2025 Antmicro <www.antmicro.com>
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <zephyr/sys/fdtable.h>
++#include <unistd.h>
++
++int fclose(FILE *stream)
++{
++	int fd;
++
++	fflush(stream);
++	fd = zvfs_libc_file_get_fd(stream);
++
++	if (!fd) {
++		return EOF;
++	}
++	if (close(fd)) {
++		return EOF;
++	}
++
++	return 0;
++}
+diff --git a/lib/libc/newlib/CMakeLists.txt b/lib/libc/newlib/CMakeLists.txt
+index d3dc448eccafc..97af247e6d77f 100644
+--- a/lib/libc/newlib/CMakeLists.txt
++++ b/lib/libc/newlib/CMakeLists.txt
+@@ -3,6 +3,8 @@
+ zephyr_library()
+ zephyr_library_sources(libc-hooks.c)
+ 
++zephyr_library_sources_ifdef(CONFIG_ZVFS zvfs_libc.c)
++
+ # Do not allow LTO when compiling libc-hooks.c file
+ set_source_files_properties(libc-hooks.c PROPERTIES COMPILE_OPTIONS $<TARGET_PROPERTY:compiler,prohibit_lto>)
+ 
+diff --git a/lib/libc/newlib/Kconfig b/lib/libc/newlib/Kconfig
+index 24c114f35f9fa..6359d71496b01 100644
+--- a/lib/libc/newlib/Kconfig
++++ b/lib/libc/newlib/Kconfig
+@@ -80,4 +80,12 @@ config NEWLIB_LIBC_USE_POSIX_LIMITS_H
+ 	  Disable this option if your toolchain's newlib already includes all mandatory POSIX
+ 	  limits.
+ 
++if ZVFS
++
++config ZVFS_LIBC_FILE_SIZE
++	default 184 if 64BIT
++	default 104
++
++endif # ZVFS
++
+ endif # NEWLIB_LIBC
+diff --git a/lib/libc/newlib/libc-hooks.c b/lib/libc/newlib/libc-hooks.c
+index 4ec1887f1cb54..e690006db096d 100644
+--- a/lib/libc/newlib/libc-hooks.c
++++ b/lib/libc/newlib/libc-hooks.c
+@@ -169,6 +169,9 @@ static int (*_stdout_hook)(int) = _stdout_hook_default;
+ void __stdout_hook_install(int (*hook)(int))
+ {
+ 	_stdout_hook = hook;
++#ifdef CONFIG_ZVFS
++	stdout->_file = 1; /* STDOUT_FILENO */
++#endif
+ }
+ 
+ static unsigned char _stdin_hook_default(void)
+@@ -181,6 +184,9 @@ static unsigned char (*_stdin_hook)(void) = _stdin_hook_default;
+ void __stdin_hook_install(unsigned char (*hook)(void))
+ {
+ 	_stdin_hook = hook;
++#ifdef CONFIG_ZVFS
++	stdin->_file = 0; /* STDIN_FILENO */
++#endif
+ }
+ 
+ int z_impl_zephyr_read_stdin(char *buf, int nbytes)
+diff --git a/lib/libc/newlib/zvfs_libc.c b/lib/libc/newlib/zvfs_libc.c
+new file mode 100644
+index 0000000000000..b8f697e4842cd
+--- /dev/null
++++ b/lib/libc/newlib/zvfs_libc.c
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (c) 2024 Tenstorrent AI ULC
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include <zephyr/sys/fdtable.h>
++#include <zephyr/toolchain.h>
++
++BUILD_ASSERT(CONFIG_ZVFS_LIBC_FILE_SIZE >= sizeof(__FILE),
++	     "CONFIG_ZVFS_LIBC_FILE_SIZE must at least match size of FILE object");
++BUILD_ASSERT(CONFIG_ZVFS_LIBC_FILE_ALIGN == __alignof(__FILE),
++	     "CONFIG_ZVFS_LIBC_FILE_SIZE must match alignment of FILE object");
++
++static int z_libc_sflags(const char *mode)
++{
++	int ret = 0;
++
++	switch (mode[0]) {
++	case 'r':
++		ret = ZVFS_O_RDONLY;
++		break;
++
++	case 'w':
++		ret = ZVFS_O_WRONLY | ZVFS_O_CREAT | ZVFS_O_TRUNC;
++		break;
++
++	case 'a':
++		ret = ZVFS_O_WRONLY | ZVFS_O_CREAT | ZVFS_O_APPEND;
++		break;
++	default:
++		return 0;
++	}
++
++	while (*++mode) {
++		switch (*mode) {
++		case '+':
++			ret |= ZVFS_O_RDWR;
++			break;
++		case 'x':
++			ret |= ZVFS_O_EXCL;
++			break;
++		default:
++			break;
++		}
++	}
++
++	return ret;
++}
++
++void zvfs_libc_file_alloc_cb(int fd, const char *mode, FILE *fp)
++{
++	/*
++	 * These symbols have conflicting declarations in upstream headers.
++	 * Use uintptr_t and a cast to assign cleanly.
++	 */
++	extern uintptr_t _close_r;
++	extern uintptr_t _lseek_r;
++	extern uintptr_t _read_r;
++	extern uintptr_t _write_r;
++
++	__ASSERT_NO_MSG(mode != NULL);
++	__ASSERT_NO_MSG(fp != NULL);
++
++	fp->_flags = z_libc_sflags(mode);
++	fp->_file = fd;
++	fp->_cookie = (void *)fp;
++
++	*(uintptr_t *)&fp->_read = (uintptr_t)&_read_r;
++	*(uintptr_t *)&fp->_write = (uintptr_t)&_write_r;
++	*(uintptr_t *)&fp->_seek = (uintptr_t)&_lseek_r;
++	*(uintptr_t *)&fp->_close = (uintptr_t)&_close_r;
++}
++
++int zvfs_libc_file_get_fd(FILE *fp)
++{
++	return fp->_file;
++}
+diff --git a/lib/libc/picolibc/CMakeLists.txt b/lib/libc/picolibc/CMakeLists.txt
+index 752379dd76d44..92bf2852bbfc2 100644
+--- a/lib/libc/picolibc/CMakeLists.txt
++++ b/lib/libc/picolibc/CMakeLists.txt
+@@ -11,6 +11,8 @@ zephyr_library_sources(
+   stdio.c
+   )
+ 
++zephyr_library_sources_ifdef(CONFIG_ZVFS zvfs_libc.c)
++
+ zephyr_library_compile_options($<TARGET_PROPERTY:compiler,prohibit_lto>)
+ 
+ # define __LINUX_ERRNO_EXTENSIONS__ so we get errno defines like -ESHUTDOWN
+diff --git a/lib/libc/picolibc/Kconfig b/lib/libc/picolibc/Kconfig
+index be30e6a8f3a60..e9703f48d1de2 100644
+--- a/lib/libc/picolibc/Kconfig
++++ b/lib/libc/picolibc/Kconfig
+@@ -200,4 +200,12 @@ config PICOLIBC_GLOBAL_ERRNO
+ 
+ endif # PICOLIBC_USE_MODULE
+ 
++if ZVFS
++
++config ZVFS_LIBC_FILE_SIZE
++	default 144 if 64BIT
++	default 80
++
++endif # ZVFS
++
+ endif # PICOLIBC
+diff --git a/lib/libc/picolibc/stdio.c b/lib/libc/picolibc/stdio.c
+index 342eedc877101..faa2ef46d05d8 100644
+--- a/lib/libc/picolibc/stdio.c
++++ b/lib/libc/picolibc/stdio.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include "picolibc-hooks.h"
++#include "stdio-bufio.h"
+ 
+ static LIBC_DATA int (*_stdout_hook)(int);
+ 
+@@ -22,6 +23,7 @@ static inline int z_vrfy_zephyr_fputc(int c, FILE *stream)
+ #include <zephyr/syscalls/zephyr_fputc_mrsh.c>
+ #endif
+ 
++#ifndef CONFIG_ZVFS
+ static int picolibc_put(char a, FILE *f)
+ {
+ 	zephyr_fputc(a, f);
+@@ -30,6 +32,7 @@ static int picolibc_put(char a, FILE *f)
+ 
+ static LIBC_DATA FILE __stdout = FDEV_SETUP_STREAM(picolibc_put, NULL, NULL, 0);
+ static LIBC_DATA FILE __stdin = FDEV_SETUP_STREAM(NULL, NULL, NULL, 0);
++#endif
+ 
+ #ifdef __strong_reference
+ #define STDIO_ALIAS(x) __strong_reference(stdout, x);
+@@ -37,18 +40,35 @@ static LIBC_DATA FILE __stdin = FDEV_SETUP_STREAM(NULL, NULL, NULL, 0);
+ #define STDIO_ALIAS(x) FILE *const x = &__stdout;
+ #endif
+ 
++#ifndef CONFIG_ZVFS
+ FILE *const stdin = &__stdin;
+ FILE *const stdout = &__stdout;
+ STDIO_ALIAS(stderr);
++#endif
+ 
+ void __stdout_hook_install(int (*hook)(int))
+ {
+-	_stdout_hook = hook;
++#ifdef CONFIG_ZVFS
++	struct __file_bufio *bp = (struct __file_bufio *)stdout;
++
++	bp->ptr = INT_TO_POINTER(1 /* STDOUT_FILENO */);
++	bp->bflags |= _FDEV_SETUP_WRITE;
++#else
+ 	__stdout.flags |= _FDEV_SETUP_WRITE;
++#endif
++
++	_stdout_hook = hook;
+ }
+ 
+ void __stdin_hook_install(unsigned char (*hook)(void))
+ {
++#ifdef CONFIG_ZVFS
++	struct __file_bufio *bp = (struct __file_bufio *)stdin;
++
++	bp->bflags |= _FDEV_SETUP_READ;
++	bp->ptr = INT_TO_POINTER(0 /* STDIN_FILENO */);
++#else
+ 	__stdin.get = (int (*)(FILE *)) hook;
+ 	__stdin.flags |= _FDEV_SETUP_READ;
++#endif
+ }
+diff --git a/lib/libc/picolibc/zvfs_libc.c b/lib/libc/picolibc/zvfs_libc.c
+new file mode 100644
+index 0000000000000..470aad20c2337
+--- /dev/null
++++ b/lib/libc/picolibc/zvfs_libc.c
+@@ -0,0 +1,85 @@
++/*
++ * Copyright (c) 2024 Tenstorrent AI ULC
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include "stdio-bufio.h"
++
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++#include <zephyr/sys/fdtable.h>
++#include <zephyr/toolchain.h>
++
++BUILD_ASSERT(CONFIG_ZVFS_LIBC_FILE_SIZE >= sizeof(struct __file_bufio),
++	     "CONFIG_ZVFS_LIBC_FILE_SIZE must at least match size of FILE object");
++BUILD_ASSERT(CONFIG_ZVFS_LIBC_FILE_ALIGN == __alignof(struct __file_bufio),
++	     "CONFIG_ZVFS_LIBC_FILE_SIZE must match alignment of FILE object");
++
++#define FDEV_SETUP_ZVFS(fd, buf, size, rwflags, bflags)                                            \
++	FDEV_SETUP_BUFIO(fd, buf, size, zvfs_read_wrap, zvfs_write_wrap, zvfs_lseek, zvfs_close,   \
++			 rwflags, bflags)
++
++/* FIXME: do not use ssize_t or off_t */
++ssize_t zvfs_read(int fd, void *buf, size_t sz, const size_t *from_offset);
++ssize_t zvfs_write(int fd, const void *buf, size_t sz, const size_t *from_offset);
++off_t zvfs_lseek(int fd, off_t offset, int whence);
++int zvfs_close(int fd);
++
++static ssize_t zvfs_read_wrap(int fd, void *buf, size_t sz)
++{
++	return zvfs_read(fd, buf, sz, NULL);
++}
++
++static ssize_t zvfs_write_wrap(int fd, const void *buf, size_t sz)
++{
++	return zvfs_write(fd, buf, sz, NULL);
++}
++
++static int sflags(const char *mode)
++{
++	int flags = 0;
++
++	if (mode == NULL) {
++		return 0;
++	}
++
++	switch (mode[0]) {
++	case 'r':
++		flags |= __SRD;
++		break;
++	case 'w':
++		flags |= __SWR;
++		break;
++	case 'a':
++		flags |= __SWR;
++		break;
++	default:
++		/* ignore */
++		break;
++	}
++	if (mode[1] == '+') {
++		flags |= __SRD | __SWR;
++	}
++
++	return flags;
++}
++
++void zvfs_libc_file_alloc_cb(int fd, const char *mode, FILE *fp)
++{
++	struct __file_bufio *const bf = (struct __file_bufio *)fp;
++
++	*bf = (struct __file_bufio)FDEV_SETUP_ZVFS(fd, (char *)(bf + 1), BUFSIZ, sflags(mode),
++						   __BFALL);
++
++	__bufio_lock_init(&(bf->xfile.cfile.file));
++}
++
++int zvfs_libc_file_get_fd(FILE *fp)
++{
++	const struct __file_bufio *const bf = (const struct __file_bufio *)fp;
++
++	return POINTER_TO_INT(bf->ptr);
++}
+diff --git a/lib/os/fdtable.c b/lib/os/fdtable.c
+index be53627efca7b..ad060f333befa 100644
+--- a/lib/os/fdtable.c
++++ b/lib/os/fdtable.c
+@@ -75,6 +75,47 @@ static struct fd_entry fdtable[CONFIG_ZVFS_OPEN_MAX] = {
+ 
+ static K_MUTEX_DEFINE(fdtable_lock);
+ 
++#ifdef CONFIG_MINIMAL_LIBC
++void zvfs_libc_file_alloc_cb(int fd, const char *mode, FILE *fp)
++{
++	ARG_UNUSED(fd);
++	ARG_UNUSED(mode);
++	ARG_UNUSED(fp);
++}
++
++int zvfs_libc_file_alloc(int fd, const char *mode, FILE **fp, k_timeout_t timeout)
++{
++	ARG_UNUSED(mode);
++	ARG_UNUSED(timeout);
++
++	__ASSERT_NO_MSG(mode != NULL);
++	__ASSERT_NO_MSG(fp != NULL);
++
++	*fp = (FILE *)&fdtable[fd];
++
++	return 0;
++}
++
++void zvfs_libc_file_free(FILE *fp)
++{
++	ARG_UNUSED(fp);
++}
++
++int zvfs_libc_file_get_fd(FILE *fp)
++{
++	return (const struct fd_entry *)fp - fdtable;
++}
++
++FILE *zvfs_libc_file_from_fd(int fd)
++{
++	if ((fd < 0) || (fd >= ARRAY_SIZE(fdtable))) {
++		return NULL;
++	}
++
++	return (FILE *)&fdtable[fd];
++}
++#endif
++
+ static int z_fd_ref(int fd)
+ {
+ 	return atomic_inc(&fdtable[fd].refcount) + 1;
+@@ -406,6 +447,7 @@ int zvfs_close(int fd)
+ 	}
+ 	k_mutex_unlock(&fdtable[fd].lock);
+ 
++	zvfs_libc_file_free(zvfs_libc_file_from_fd(fd));
+ 	zvfs_free_fd(fd);
+ 
+ 	return res;
+@@ -413,23 +455,33 @@ int zvfs_close(int fd)
+ 
+ FILE *zvfs_fdopen(int fd, const char *mode)
+ {
+-	ARG_UNUSED(mode);
++	int ret;
++	FILE *fp = NULL;
+ 
+ 	if (_check_fd(fd) < 0) {
+ 		return NULL;
+ 	}
+ 
+-	return (FILE *)&fdtable[fd];
++	ret = zvfs_libc_file_alloc(fd, mode, &fp, K_NO_WAIT);
++	if (ret < 0) {
++		errno = ENOMEM;
++	} else {
++		__ASSERT(fp != NULL, "zvfs_libc_file_alloc() returned an invalid file pointer");
++	}
++
++	return fp;
+ }
+ 
+ int zvfs_fileno(FILE *file)
+ {
+-	if (!IS_ARRAY_ELEMENT(fdtable, file)) {
++	int fd = zvfs_libc_file_get_fd(file);
++
++	if (fd < 0 || fd >= ARRAY_SIZE(fdtable)) {
+ 		errno = EBADF;
+ 		return -1;
+ 	}
+ 
+-	return (struct fd_entry *)file - fdtable;
++	return fd;
+ }
+ 
+ int zvfs_fstat(int fd, struct stat *buf)
+diff --git a/lib/os/zvfs/CMakeLists.txt b/lib/os/zvfs/CMakeLists.txt
+index d855d1005efc6..c9120e697a864 100644
+--- a/lib/os/zvfs/CMakeLists.txt
++++ b/lib/os/zvfs/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ zephyr_library()
++zephyr_library_sources_ifndef(CONFIG_MINIMAL_LIBC zvfs_libc_file.c)
+ zephyr_library_sources_ifdef(CONFIG_ZVFS_EVENTFD zvfs_eventfd.c)
+ zephyr_library_sources_ifdef(CONFIG_ZVFS_POLL zvfs_poll.c)
+ zephyr_library_sources_ifdef(CONFIG_ZVFS_SELECT zvfs_select.c)
+diff --git a/lib/os/zvfs/Kconfig b/lib/os/zvfs/Kconfig
+index 794c15142db26..ec96025f98a21 100644
+--- a/lib/os/zvfs/Kconfig
++++ b/lib/os/zvfs/Kconfig
+@@ -7,6 +7,7 @@ menuconfig ZVFS
+ 	bool "Zephyr virtual filesystem (ZVFS) support [EXPERIMENTAL]"
+ 	select FDTABLE
+ 	select EXPERIMENTAL
++	select NATIVE_LIBC_INCOMPATIBLE
+ 	help
+ 	  ZVFS is a central, Zephyr-native library that provides a common interoperable API for all
+ 	  types of file descriptors such as those from the non-virtual FS, sockets, eventfds, FILE *'s
+@@ -14,6 +15,25 @@ menuconfig ZVFS
+ 
+ if ZVFS
+ 
++config ZVFS_LIBC_FILE_SIZE
++	int
++	default -1
++	help
++	  Size of C library FILE objects, in bytes. All C libraries must specify this value via
++	  Kconfig.
++
++	  Beyond that, all C libraries must also provide the following two functions:
++
++	  - void zvfs_libc_file_alloc_cb(int fd, const char *mode, FILE *fp);
++	  - void zvfs_libc_file_get_fd(int fd, const char *mode, FILE *fp);
++
++config ZVFS_LIBC_FILE_ALIGN
++	int
++	default 8 if 64BIT
++	default 4
++	help
++	  Alignment of C library FILE objects, in bytes.
++
+ config ZVFS_EVENTFD
+ 	bool "ZVFS event file descriptor support"
+ 	imply ZVFS_POLL
+diff --git a/lib/os/zvfs/zvfs_libc_file.c b/lib/os/zvfs/zvfs_libc_file.c
+new file mode 100644
+index 0000000000000..d0117fe67dbf6
+--- /dev/null
++++ b/lib/os/zvfs/zvfs_libc_file.c
+@@ -0,0 +1,85 @@
++/*
++ * Copyright (c) 2024 Zephyr Contributors
++ * Copyright (c) 2025 Antmicro <www.antmicro.com>
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#include <stdint.h>
++
++#include <zephyr/kernel.h>
++#include <zephyr/sys/fdtable.h>
++#include <zephyr/sys/util.h>
++
++/* in case these are defined as macros */
++#undef stdin
++#undef stdout
++#undef stderr
++
++static char __aligned(WB_UP(CONFIG_ZVFS_LIBC_FILE_ALIGN)) _stdin[CONFIG_ZVFS_LIBC_FILE_SIZE];
++static char __aligned(WB_UP(CONFIG_ZVFS_LIBC_FILE_ALIGN)) _stdout[CONFIG_ZVFS_LIBC_FILE_SIZE];
++static char __aligned(WB_UP(CONFIG_ZVFS_LIBC_FILE_ALIGN)) _stderr[CONFIG_ZVFS_LIBC_FILE_SIZE];
++FILE *const stdin = (FILE *)(&_stdin);
++FILE *const stdout = (FILE *)(&_stdout);
++FILE *const stderr = (FILE *)(&_stderr);
++
++#define table_stride ROUND_UP(CONFIG_ZVFS_LIBC_FILE_SIZE, CONFIG_ZVFS_LIBC_FILE_ALIGN)
++#define table_data   ((uint8_t *)_k_mem_slab_buf_zvfs_libc_file_table)
++
++K_MEM_SLAB_DEFINE_STATIC(zvfs_libc_file_table, CONFIG_ZVFS_LIBC_FILE_SIZE, CONFIG_ZVFS_OPEN_MAX,
++			 CONFIG_ZVFS_LIBC_FILE_ALIGN);
++
++static int file_to_fd[CONFIG_ZVFS_OPEN_MAX];
++#define ptr_to_idx(fp) (POINTER_TO_INT((uint8_t *)fp - table_data) / table_stride)
++
++int zvfs_libc_file_alloc(int fd, const char *mode, FILE **fp, k_timeout_t timeout)
++{
++	int ret;
++
++	__ASSERT_NO_MSG(mode != NULL);
++	__ASSERT_NO_MSG(fp != NULL);
++
++	ret = k_mem_slab_alloc(&zvfs_libc_file_table, (void **)fp, timeout);
++	if (ret < 0) {
++		return ret;
++	}
++	file_to_fd[ptr_to_idx(*fp)] = fd;
++	zvfs_libc_file_alloc_cb(fd, mode, *fp);
++
++	return 0;
++}
++
++void zvfs_libc_file_free(FILE *fp)
++{
++	if ((fp == NULL) || (fp == stdin) || (fp == stdout) || (fp == stderr)) {
++		return;
++	}
++
++	k_mem_slab_free(&zvfs_libc_file_table, (void *)fp);
++	file_to_fd[ptr_to_idx(fp)] = -1;
++}
++
++FILE *zvfs_libc_file_from_fd(int fd)
++{
++	if ((fd < 0) || (fd >= ARRAY_SIZE(file_to_fd))) {
++		return NULL;
++	}
++	switch (fd) {
++	case 0:
++		return stdin;
++	case 1:
++		return stdout;
++	case 2:
++		return stderr;
++	default:
++		/* fd points at an actual file */
++		break;
++	}
++
++	for (int i = 0; i < ARRAY_SIZE(file_to_fd); i++) {
++		if (file_to_fd[i] == fd) {
++			return (FILE *)&_k_mem_slab_buf_zvfs_libc_file_table[table_stride * i];
++		}
++	}
++	return NULL;
++}
+diff --git a/lib/posix/options/device_io.c b/lib/posix/options/device_io.c
+index 6fea22d01545d..83c180fa9d208 100644
+--- a/lib/posix/options/device_io.c
++++ b/lib/posix/options/device_io.c
+@@ -99,7 +99,7 @@ int pselect(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+ 	return zvfs_select(nfds, readfds, writefds, exceptfds, timeout, sigmask);
+ }
+ 
+-ssize_t pwrite(int fd, void *buf, size_t count, off_t offset)
++ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset)
+ {
+ 	size_t off = (size_t)offset;
+ 
+diff --git a/lib/posix/options/posix_clock.h b/lib/posix/options/posix_clock.h
+index b955d81f914b3..bad12eb99ea5b 100644
+--- a/lib/posix/options/posix_clock.h
++++ b/lib/posix/options/posix_clock.h
+@@ -22,6 +22,18 @@ extern "C" {
+ 
+ /** @cond INTERNAL_HIDDEN */
+ 
++#if !defined(_CLOCK_T_DECLARED) && !defined(__clock_t_defined)
++typedef unsigned long clock_t;
++#define _CLOCK_T_DECLARED
++#define __clock_t_defined
++#endif
++
++#if !defined(_CLOCKID_T_DECLARED) && !defined(__clockid_t_defined)
++typedef unsigned long clockid_t;
++#define _CLOCKID_T_DECLARED
++#define __clockid_t_defined
++#endif
++
+ static inline int64_t ts_to_ns(const struct timespec *ts)
+ {
+ 	return ts->tv_sec * NSEC_PER_SEC + ts->tv_nsec;
+diff --git a/tests/lib/c_lib/thrd/prj.conf b/tests/lib/c_lib/thrd/prj.conf
+index 2ee6109079b6f..21a8d36f94fae 100644
+--- a/tests/lib/c_lib/thrd/prj.conf
++++ b/tests/lib/c_lib/thrd/prj.conf
+@@ -2,7 +2,7 @@ CONFIG_ZTEST=y
+ CONFIG_TEST_USERSPACE=y
+ CONFIG_ZTEST_FATAL_HOOK=y
+ 
+-CONFIG_POSIX_API=y
++CONFIG_POSIX_AEP_CHOICE_BASE=y
+ CONFIG_THREAD_STACK_INFO=y
+ CONFIG_DYNAMIC_THREAD=y
+ CONFIG_DYNAMIC_THREAD_POOL_SIZE=2
+diff --git a/tests/lib/c_lib/thrd/testcase.yaml b/tests/lib/c_lib/thrd/testcase.yaml
+index e11360efd2eaf..a126353d6b112 100644
+--- a/tests/lib/c_lib/thrd/testcase.yaml
++++ b/tests/lib/c_lib/thrd/testcase.yaml
+@@ -12,7 +12,7 @@ common:
+ tests:
+   libraries.libc.c11_threads.minimal:
+     tags: minimal_libc
+-    filter: CONFIG_MINIMAL_LIBC_SUPPORTED
++    filter: CONFIG_MINIMAL_LIBC_SUPPORTED and not CONFIG_REQUIRES_FULL_LIBC
+     extra_configs:
+       - CONFIG_MINIMAL_LIBC=y
+       - CONFIG_MINIMAL_LIBC_NON_REENTRANT_FUNCTIONS=y

@@ -15,6 +15,7 @@ build:
   script:
     - west init -l .
     - west update
+    - west patch apply
     - west build -b ${CI_PARALLEL_NAME}
   artifacts:
     paths:

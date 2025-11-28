@@ -1,0 +1,416 @@
+From dd819e4631186a9e45ed62acf15c6c0feaa34357 Mon Sep 17 00:00:00 2001
+From: Jakub Klimczak <jklimczak@internships.antmicro.com>
+Date: Thu, 11 Sep 2025 12:14:39 +0200
+Subject: [PATCH] lib: Implement POSIX read(), write(), poll() etc. on stdio
+
+Give the user the ability to interact with stdio using POSIX read() and
+write() using the tty.h API. This avoids depending on standard C functions
+and allows poll(), select() et al. to work for stdio thanks to the internal
+use of semaphores. Alternatively, should there be no UART console device,
+read() and write() will use stdio hooks (where available) and poll() will
+simply return POLLNVAL for fd's 0, 1 and 2.
+Tested using the posix/device_io test suite.
+
+Signed-off-by: Jakub Klimczak <jklimczak@internships.antmicro.com>
+---
+ .../minimal/source/stdout/stdout_console.c    |  22 +++
+ lib/libc/picolibc/stdio.c                     |  56 +++++--
+ lib/os/fdtable.c                              | 138 +++++++++++++++++-
+ lib/posix/options/Kconfig.device_io           |  29 ++++
+ subsys/console/CMakeLists.txt                 |   3 +-
+ 5 files changed, 227 insertions(+), 21 deletions(-)
+
+diff --git a/lib/libc/minimal/source/stdout/stdout_console.c b/lib/libc/minimal/source/stdout/stdout_console.c
+index 9cef4afc873d0..dac63a5e80543 100644
+--- a/lib/libc/minimal/source/stdout/stdout_console.c
++++ b/lib/libc/minimal/source/stdout/stdout_console.c
+@@ -107,6 +107,28 @@ static inline size_t z_vrfy_zephyr_fwrite(const void *ZRESTRICT ptr,
+ #include <zephyr/syscalls/zephyr_fwrite_mrsh.c>
+ #endif
+ 
++int z_impl_zephyr_write_stdout(const void *buffer, int nbytes)
++{
++	const char *buf = buffer;
++
++	for (int i = 0; i < nbytes; i++) {
++		if (*(buf + i) == '\n') {
++			_stdout_hook('\r');
++		}
++		_stdout_hook(*(buf + i));
++	}
++	return nbytes;
++}
++
++#ifdef CONFIG_USERSPACE
++static inline int z_vrfy_zephyr_write_stdout(const void *buf, int nbytes)
++{
++	K_OOPS(K_SYSCALL_MEMORY_READ(buf, nbytes));
++	return z_impl_zephyr_write_stdout((const void *)buf, nbytes);
++}
++#include <zephyr/syscalls/zephyr_write_stdout_mrsh.c>
++#endif
++
+ size_t fwrite(const void *ZRESTRICT ptr, size_t size, size_t nitems,
+ 			  FILE *ZRESTRICT stream)
+ {
+diff --git a/lib/libc/picolibc/stdio.c b/lib/libc/picolibc/stdio.c
+index faa2ef46d05d8..74608ded862af 100644
+--- a/lib/libc/picolibc/stdio.c
++++ b/lib/libc/picolibc/stdio.c
+@@ -7,12 +7,18 @@
+ #include "picolibc-hooks.h"
+ #include "stdio-bufio.h"
+ 
+-static LIBC_DATA int (*_stdout_hook)(int);
++static int _stdout_hook_default(int c)
++{
++	(void)(c); /* Prevent warning about unused argument */
++
++	return EOF;
++}
++
++static LIBC_DATA int (*_stdout_hook)(int) = _stdout_hook_default;
+ 
+ int z_impl_zephyr_fputc(int a, FILE *out)
+ {
+-	(*_stdout_hook)(a);
+-	return 0;
++	return ((out == stdout) || (out == stderr)) ? _stdout_hook(a) : EOF;
+ }
+ 
+ #ifdef CONFIG_USERSPACE
+@@ -23,15 +29,14 @@ static inline int z_vrfy_zephyr_fputc(int c, FILE *stream)
+ #include <zephyr/syscalls/zephyr_fputc_mrsh.c>
+ #endif
+ 
+-#ifndef CONFIG_ZVFS
+ static int picolibc_put(char a, FILE *f)
+ {
+-	zephyr_fputc(a, f);
+-	return 0;
++	return zephyr_fputc(a, f);
+ }
+ 
+-static LIBC_DATA FILE __stdout = FDEV_SETUP_STREAM(picolibc_put, NULL, NULL, 0);
+-static LIBC_DATA FILE __stdin = FDEV_SETUP_STREAM(NULL, NULL, NULL, 0);
++#ifndef CONFIG_ZVFS
++static LIBC_DATA FILE __stdout = FDEV_SETUP_STREAM(picolibc_put, NULL, NULL, _FDEV_SETUP_WRITE);
++static LIBC_DATA FILE __stdin = FDEV_SETUP_STREAM(NULL, NULL, NULL, _FDEV_SETUP_READ);
+ #endif
+ 
+ #ifdef __strong_reference
+@@ -48,27 +53,48 @@ STDIO_ALIAS(stderr);
+ 
+ void __stdout_hook_install(int (*hook)(int))
+ {
++	_stdout_hook = hook;
+ #ifdef CONFIG_ZVFS
++	stdout->put = picolibc_put;
++	stdout->flags |= _FDEV_SETUP_WRITE;
++
+ 	struct __file_bufio *bp = (struct __file_bufio *)stdout;
+ 
+ 	bp->ptr = INT_TO_POINTER(1 /* STDOUT_FILENO */);
+ 	bp->bflags |= _FDEV_SETUP_WRITE;
+-#else
+-	__stdout.flags |= _FDEV_SETUP_WRITE;
+ #endif
+-
+-	_stdout_hook = hook;
+ }
+ 
+ void __stdin_hook_install(unsigned char (*hook)(void))
+ {
++	stdin->get = (int (*)(FILE *))hook;
+ #ifdef CONFIG_ZVFS
++	stdin->flags |= _FDEV_SETUP_READ;
+ 	struct __file_bufio *bp = (struct __file_bufio *)stdin;
+ 
+ 	bp->bflags |= _FDEV_SETUP_READ;
+ 	bp->ptr = INT_TO_POINTER(0 /* STDIN_FILENO */);
+-#else
+-	__stdin.get = (int (*)(FILE *)) hook;
+-	__stdin.flags |= _FDEV_SETUP_READ;
+ #endif
+ }
++
++int z_impl_zephyr_write_stdout(const void *buffer, int nbytes)
++{
++	const char *buf = buffer;
++
++	for (int i = 0; i < nbytes; i++) {
++		if (*(buf + i) == '\n') {
++			_stdout_hook('\r');
++		}
++		_stdout_hook(*(buf + i));
++	}
++	return nbytes;
++}
++
++#ifdef CONFIG_USERSPACE
++static inline int z_vrfy_zephyr_write_stdout(const void *buf, int nbytes)
++{
++	K_OOPS(K_SYSCALL_MEMORY_READ(buf, nbytes));
++	return z_impl_zephyr_write_stdout((const void *)buf, nbytes);
++}
++#include <zephyr/syscalls/zephyr_write_stdout_mrsh.c>
++#endif
+diff --git a/lib/os/fdtable.c b/lib/os/fdtable.c
+index ad060f333befa..e7c3fc431ff90 100644
+--- a/lib/os/fdtable.c
++++ b/lib/os/fdtable.c
+@@ -23,6 +23,10 @@
+ #include <zephyr/sys/speculation.h>
+ #include <zephyr/internal/syscall_handler.h>
+ #include <zephyr/sys/atomic.h>
++#include <zephyr/device.h>
++#include <zephyr/console/console.h>
++#include <zephyr/console/tty.h>
++#include <zephyr/drivers/uart.h>
+ 
+ struct stat;
+ 
+@@ -42,6 +46,12 @@ static const struct fd_op_vtable stdinout_fd_op_vtable;
+ BUILD_ASSERT(CONFIG_ZVFS_OPEN_MAX >= 3, "CONFIG_ZVFS_OPEN_MAX >= 3 for CONFIG_POSIX_DEVICE_IO");
+ #endif /* defined(CONFIG_POSIX_DEVICE_IO) */
+ 
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++static struct tty_serial tty;
++static uint8_t tty_rxbuf[CONFIG_POSIX_DEVICE_IO_STDIN_BUFSIZE];
++static uint8_t tty_txbuf[CONFIG_POSIX_DEVICE_IO_STDOUT_BUFSIZE];
++#endif
++
+ static struct fd_entry fdtable[CONFIG_ZVFS_OPEN_MAX] = {
+ #if defined(CONFIG_POSIX_DEVICE_IO)
+ 	/*
+@@ -49,6 +59,9 @@ static struct fd_entry fdtable[CONFIG_ZVFS_OPEN_MAX] = {
+ 	 */
+ 	{
+ 		/* STDIN */
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++		.obj = &tty,
++#endif
+ 		.vtable = &stdinout_fd_op_vtable,
+ 		.refcount = ATOMIC_INIT(1),
+ 		.lock = Z_MUTEX_INITIALIZER(fdtable[0].lock),
+@@ -56,6 +69,9 @@ static struct fd_entry fdtable[CONFIG_ZVFS_OPEN_MAX] = {
+ 	},
+ 	{
+ 		/* STDOUT */
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++		.obj = &tty,
++#endif
+ 		.vtable = &stdinout_fd_op_vtable,
+ 		.refcount = ATOMIC_INIT(1),
+ 		.lock = Z_MUTEX_INITIALIZER(fdtable[1].lock),
+@@ -63,6 +79,9 @@ static struct fd_entry fdtable[CONFIG_ZVFS_OPEN_MAX] = {
+ 	},
+ 	{
+ 		/* STDERR */
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++		.obj = &tty,
++#endif
+ 		.vtable = &stdinout_fd_op_vtable,
+ 		.refcount = ATOMIC_INIT(1),
+ 		.lock = Z_MUTEX_INITIALIZER(fdtable[2].lock),
+@@ -378,7 +397,7 @@ static ssize_t zvfs_rw(int fd, void *buf, size_t sz, bool is_write, const size_t
+ 		 * Seekable file types should support pread() / pwrite() and per-fd offset passing.
+ 		 * Otherwise, it's a bug.
+ 		 */
+-		errno = ENOTSUP;
++		errno = ESPIPE;
+ 		res = -1;
+ 		goto unlock;
+ 	}
+@@ -593,16 +612,66 @@ int zvfs_ioctl(int fd, unsigned long request, va_list args)
+  * fd operations for stdio/stdout/stderr
+  */
+ 
++int z_impl_zephyr_read_stdin(char *buf, int nbytes);
+ int z_impl_zephyr_write_stdout(const char *buf, int nbytes);
+ 
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++static int initialize_tty(struct tty_serial *obj)
++{
++	static bool initialized;
++	static int ret;
++
++	if (initialized) {
++		return ret;
++	}
++	ret = tty_init(obj, DEVICE_DT_GET(DT_CHOSEN(zephyr_console)));
++	initialized = true;
++	if (ret) {
++		errno = -ret;
++		ret = -1;
++		return ret;
++	}
++	tty_set_tx_buf(obj, tty_txbuf, sizeof(tty_txbuf));
++	tty_set_rx_buf(obj, tty_rxbuf, sizeof(tty_rxbuf));
++	return ret;
++}
++#endif
++
+ static ssize_t stdinout_read_vmeth(void *obj, void *buffer, size_t count)
+ {
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++	int ret = initialize_tty(obj);
++
++	if (ret) {
++		return ret;
++	}
++	ret = tty_read(obj, buffer, count);
++	if (ret < -1) { /* return no less than -1 as per POSIX; errno is already set */
++		return -1;
++	}
++	return ret;
++#elif defined(CONFIG_NEWLIB_LIBC)
++	return z_impl_zephyr_read_stdin(buffer, count);
++#else
+ 	return 0;
++#endif
+ }
+ 
+ static ssize_t stdinout_write_vmeth(void *obj, const void *buffer, size_t count)
+ {
+-#if defined(CONFIG_NEWLIB_LIBC) || defined(CONFIG_ARCMWDT_LIBC)
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++	int ret = initialize_tty(obj);
++
++	if (ret) {
++		return ret;
++	}
++	ret = tty_write(obj, buffer, count);
++	if (ret < -1) { /* return no less than -1 as per POSIX; errno is already set */
++		return -1;
++	}
++	return ret;
++#elif defined(CONFIG_ARCMWDT_LIBC) || defined(CONFIG_MINIMAL_LIBC) ||                              \
++	defined(CONFIG_NEWLIB_LIBC) || defined(CONFIG_PICOLIBC)
+ 	return z_impl_zephyr_write_stdout(buffer, count);
+ #else
+ 	return 0;
+@@ -611,10 +680,69 @@ static ssize_t stdinout_write_vmeth(void *obj, const void *buffer, size_t count)
+ 
+ static int stdinout_ioctl_vmeth(void *obj, unsigned int request, va_list args)
+ {
+-	errno = EINVAL;
+-	return -1;
+-}
++#if defined(CONFIG_POSIX_DEVICE_IO_STDIO_CONSOLE)
++	struct tty_serial *cons = obj;
+ 
++	if (initialize_tty(cons)) {
++		return -1;
++	}
++#else
++	request = 0xffff;
++#endif
++	switch (request) {
++	case ZFD_IOCTL_POLL_PREPARE: {
++		__maybe_unused struct zvfs_pollfd *pfd = va_arg(args, struct zvfs_pollfd *);
++		struct k_poll_event **pev = va_arg(args, struct k_poll_event **);
++		struct k_poll_event *pev_end = va_arg(args, struct k_poll_event *);
++
++		if (*pev == pev_end) {
++			return -ENOMEM;
++		}
++#if CONFIG_POSIX_DEVICE_IO_STDIN_BUFSIZE + CONFIG_POSIX_DEVICE_IO_STDOUT_BUFSIZE > 0
++		if ((pfd->fd == 0) && (pfd->events & ZVFS_POLLIN)) {
++			(*pev)->type = K_POLL_TYPE_SEM_AVAILABLE;
++			(*pev)->state = K_POLL_STATE_NOT_READY;
++			(*pev)->sem = &(cons->rx_sem);
++		}
++		if (((pfd->fd == 1) || (pfd->fd == 2)) && (pfd->events & ZVFS_POLLOUT)) {
++			(*pev)->type = K_POLL_TYPE_SEM_AVAILABLE;
++			(*pev)->state = K_POLL_STATE_NOT_READY;
++			(*pev)->sem = &(cons->tx_sem);
++		}
++#else
++		(*pev)->type = K_POLL_TYPE_IGNORE;
++		(*pev)->state = K_POLL_STATE_NOT_READY;
++		(*pev)->obj = NULL;
++#endif
++		(*pev)++;
++		return 0;
++	}
++	case ZFD_IOCTL_POLL_UPDATE: {
++		struct zvfs_pollfd *pfd = va_arg(args, struct zvfs_pollfd *);
++		struct k_poll_event **pev = va_arg(args, struct k_poll_event **);
++
++#if CONFIG_POSIX_DEVICE_IO_STDIN_BUFSIZE + CONFIG_POSIX_DEVICE_IO_STDOUT_BUFSIZE > 0
++		if ((*pev)->state & K_POLL_STATE_SEM_AVAILABLE) {
++			if ((pfd->fd == 0) && (pfd->events & ZVFS_POLLIN)) {
++				pfd->revents |= ZVFS_POLLIN;
++			}
++			if (((pfd->fd == 1) || (pfd->fd == 2)) && (pfd->events & ZVFS_POLLOUT)) {
++				pfd->revents |= ZVFS_POLLOUT;
++			}
++		}
++#else
++		if (pfd->events & (ZVFS_POLLIN | ZVFS_POLLPRI | ZVFS_POLLOUT)) {
++			pfd->revents |= ZVFS_POLLNVAL;
++		}
++#endif
++		(*pev)++;
++		return 0;
++	}
++	default:
++		errno = EINVAL;
++		return -1;
++	}
++}
+ 
+ static const struct fd_op_vtable stdinout_fd_op_vtable = {
+ 	.read = stdinout_read_vmeth,
+diff --git a/lib/posix/options/Kconfig.device_io b/lib/posix/options/Kconfig.device_io
+index 416ccf74a6218..ffa7b552b0a15 100644
+--- a/lib/posix/options/Kconfig.device_io
++++ b/lib/posix/options/Kconfig.device_io
+@@ -20,6 +20,35 @@ config POSIX_DEVICE_IO
+ 
+ if POSIX_DEVICE_IO
+ 
++config POSIX_DEVICE_IO_STDIO_CONSOLE
++	bool "read() and write() to/from stdio use console subsystem"
++	default y
++	depends on CONSOLE_SUBSYS
++	depends on !(CONSOLE_GETCHAR || CONSOLE_GETLINE)
++	help
++	  Enable to use UART console whenever read() or write() is called
++	  on stdin, stdout or stderr.
++
++if POSIX_DEVICE_IO_STDIO_CONSOLE
++
++config POSIX_DEVICE_IO_STDIN_BUFSIZE
++	int "read() buffer size for stdin"
++	default 16
++	help
++	  Size of internal buffer for read()-ing from stdin. Setting both this and
++	  POSIX_DEVICE_IO_STDOUT_BUFSIZE to 0 will replace interrupt-driven operation
++	  with busy-polling and stop poll(), select() and others from working with stdio.
++
++config POSIX_DEVICE_IO_STDOUT_BUFSIZE
++	int "write() buffer size for stdout"
++	default 16
++	help
++	  Size of internal buffer for write()-ing to stdout. Setting both this and
++	  POSIX_DEVICE_IO_STDIN_BUFSIZE to 0 will replace interrupt-driven operation
++	  with busy-polling and stop poll(), select() and others from working with stdio.
++
++endif # POSIX_DEVICE_IO_STDIO_CONSOLE
++
+ # These options are intended to be used for compatibility with external POSIX
+ # implementations such as those in Newlib or Picolibc.
+ 
+diff --git a/subsys/console/CMakeLists.txt b/subsys/console/CMakeLists.txt
+index 37ff969710b77..8c03572443052 100644
+--- a/subsys/console/CMakeLists.txt
++++ b/subsys/console/CMakeLists.txt
+@@ -1,4 +1,5 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+-zephyr_sources_ifdef(CONFIG_CONSOLE_GETCHAR tty.c getchar.c)
++zephyr_sources_ifdef(CONFIG_CONSOLE_SUBSYS tty.c)
++zephyr_sources_ifdef(CONFIG_CONSOLE_GETCHAR getchar.c)
+ zephyr_sources_ifdef(CONFIG_CONSOLE_GETLINE getline.c)
