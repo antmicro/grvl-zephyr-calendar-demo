@@ -1,4 +1,4 @@
-# GRVL Zephyr calendar demo
+# grvl Zephyr calendar demo
 
 Copyright (c) 2025 [Antmicro](https://www.antmicro.com)
 
@@ -13,7 +13,7 @@ Copyright (c) 2025 [Antmicro](https://www.antmicro.com)
   <img src="images/grvl_logo_black.png"/>
 </picture>
 
-An interactinve calendar demo using [Graphics Rendering Visual Library](https://github.com/antmicro/grvl) and [Zephyr RTOS](https://zephyrproject.org).
+This repository includes an interactive calendar demo using [Graphics Rendering Visual Library](https://github.com/antmicro/grvl) and [Zephyr RTOS](https://zephyrproject.org).
 
 ![Demo preview](./images/demo.png)
 
@@ -29,7 +29,7 @@ An interactinve calendar demo using [Graphics Rendering Visual Library](https://
 - Native simulator (64 bit)
 - STM32H747I Discovery (M7 core) + ST B-LCD40-DSI (MB1166-A09) shield
 
-## Quick Start
+## Quick start
 
 ### Fetching sources
 
@@ -60,5 +60,6 @@ $ ./build/zephyr/zephyr.exe
 ```
 
 ## License
+
 The source code for this project is licensed under [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0),
 and the fonts are licensed under [SIL Open Font License 1.1](https://openfontlicense.org).
