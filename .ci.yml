@@ -17,7 +17,10 @@ build:
     - west update
     - west patch apply
     - west build -b ${CI_PARALLEL_NAME}
+    - PLATFORM=$(echo "$CI_PARALLEL_NAME" | cut -d/ -f1)
+    - mv build/zephyr/zephyr.elf build/zephyr/zephyr-$PLATFORM-grvl-calendar.elf
+    - mv build/zephyr/zephyr.sdcard.img build/zephyr/zephyr-$PLATFORM-grvl-calendar.sdcard.img || true
   artifacts:
     paths:
       - romfs
-      - build/zephyr/zephyr.*
+      - build/zephyr/zephyr*
