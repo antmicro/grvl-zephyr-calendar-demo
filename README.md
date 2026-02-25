@@ -31,6 +31,8 @@ This repository includes an interactive calendar demo using [Graphics Rendering 
 
 ## Quick start
 
+For hardware builds, an SD card is required to supply resource files. Make sure you have the `mkfs.ext2` binary (part of e2fsprogs) available on your system - this is needed to build the SD card image.
+
 ### Fetching sources
 
 ```sh
@@ -45,6 +47,12 @@ $ west patch apply
 
 ```sh
 $ west build -b <board>
+```
+
+### Preparing SD card (for hardware builds)
+
+```sh
+$ dd if=build/zephyr/zephyr.sdcard.img of=/dev/<sd-card-device> bs=4M
 ```
 
 ### Flashing
