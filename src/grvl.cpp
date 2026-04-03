@@ -74,24 +74,6 @@ K_TIMER_DEFINE(refresh_rate_timer, nullptr, nullptr);
 static constexpr auto FB_MAX = WIDTH * HEIGHT * BPP * 2;
 BUF_DEF(grvl_fb, FB_MAX);
 
-BUF_DEF(grvl_mem, CONFIG_GRVL_HEAP_SIZE);
-static k_heap grvl_heap;
-
-static void grvl_heap_init()
-{
-	k_heap_init(&grvl_heap, sdram_grvl_mem, CONFIG_GRVL_HEAP_SIZE);
-}
-
-static void *grvl_heap_malloc(size_t bytes)
-{
-	return k_heap_alloc(&grvl_heap, bytes, K_NO_WAIT);
-}
-
-static void grvl_heap_free(void *mem)
-{
-	return k_heap_free(&grvl_heap, mem);
-}
-
 static constexpr auto SDCARD_DEV = "SD";
 static constexpr auto ROMFS_PATH = "/romfs";
 
@@ -221,9 +203,6 @@ static void grvl_stm32_dma_fill(uintptr_t out_mem, uint32_t width, uint32_t heig
 static int board_init()
 {
 	dma2d_init();
-
-	grvl_heap_init();
-
 	return setup_romfs();
 }
 
@@ -271,36 +250,6 @@ static void grvl_set_layer_pointer(uintptr_t addr)
 	framebuffer = addr;
 }
 
-static void *grvl_mutex_create()
-{
-	LOG_DBG("grvl_mutex_create");
-	auto *mutex = new k_mutex;
-	if (!mutex) {
-		LOG_ERR("Failed to create mutex");
-		return nullptr;
-	}
-	k_mutex_init(mutex);
-	return mutex;
-}
-
-static int grvl_mutex_lock(void *ptr)
-{
-	LOG_DBG("grvl_mutex_lock");
-	return k_mutex_lock(static_cast<struct k_mutex *>(ptr), K_FOREVER);
-}
-
-static void grvl_mutex_unlock(void *ptr)
-{
-	LOG_DBG("grvl_mutex_unlock");
-	k_mutex_unlock(static_cast<struct k_mutex *>(ptr));
-}
-
-static void grvl_mutex_destroy(void *ptr)
-{
-	LOG_DBG("grvl_mutex_destroy");
-	delete static_cast<struct k_mutex *>(ptr);
-}
-
 static uint64_t grvl_get_timestamp()
 {
 	return k_uptime_get();
@@ -333,14 +282,6 @@ static grvl::gui_callbacks_t grvl_callbacks = {
 
 	.set_layer_pointer = grvl_set_layer_pointer,
 
-#if defined(CONFIG_BOARD_STM32H747I_DISCO)
-	.malloc = grvl_heap_malloc,
-	.free = grvl_heap_free,
-#else
-	.malloc = malloc,
-	.free = free,
-#endif
-
 #if defined(CONFIG_DEBUG)
 	.gui_printf =
 		[](const char *text, va_list argList) {
@@ -348,11 +289,6 @@ static grvl::gui_callbacks_t grvl_callbacks = {
 			printf("\n");
 		},
 #endif
-
-	.mutex_create = grvl_mutex_create,
-	.mutex_lock = grvl_mutex_lock,
-	.mutex_unlock = grvl_mutex_unlock,
-	.mutex_destroy = grvl_mutex_destroy,
 
 	.get_timestamp = grvl_get_timestamp,
 
