@@ -337,15 +337,15 @@ static int hw_init()
 static void load_fonts(fs::path &rpath, grvl::Manager &manager)
 {
 	auto font = [&](const char *path) {
-		return new grvl::Font((rpath / path).string().c_str());
+		return new grvl::GrvlBakedFont((rpath / path).string().c_str());
 	};
 
 	LOG_DBG("Loading fonts");
 
-	manager.AddFontToFontContainer("mona10", font("fonts/mona10.font"));
-	manager.AddFontToFontContainer("mona12", font("fonts/mona12.font"));
-	manager.AddFontToFontContainer("mona14", font("fonts/mona14.font"));
-	manager.AddFontToFontContainer("mona16", font("fonts/mona16.font"));
+	manager.AddFontToFontContainer("mona10", font("fonts/mona10.gbf"));
+	manager.AddFontToFontContainer("mona12", font("fonts/mona12.gbf"));
+	manager.AddFontToFontContainer("mona14", font("fonts/mona14.gbf"));
+	manager.AddFontToFontContainer("mona16", font("fonts/mona16.gbf"));
 }
 
 static void load_images(fs::path &rpath, grvl::Manager &manager)
