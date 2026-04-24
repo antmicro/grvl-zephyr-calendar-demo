@@ -46,3 +46,10 @@ patches:
   path: tests-posix-device-io-Update-tests-for-working-select-poll.patch
   sha256sum: 76c8ce584f6c9e82d6b444a9c5c37e7ea38fb26b07be5dde58292e688163ccd7
   upstreamable: true
+- author: Maksymilian Goryszewski
+  date: '2026-04-24'
+  email: mgoryszewski@internships.antmicro.com
+  module: zephyr
+  path: change-memory-region-used-by-malloc.patch
+  sha256sum: 135c291db4200cfe73464c8c532c2190b2ebad9d798aef6a217a101168e01161
+  upstreamable: false
