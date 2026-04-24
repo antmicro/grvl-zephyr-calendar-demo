@@ -8,7 +8,12 @@
 	chosen {
 		zephyr,display = &ltdc;
 		zephyr,touch = &ft5336;
+		zephyr,console = &uart8;
 	};
+};
+
+&uart8 {
+	status = "okay";
 };
 
 &sdram2 {
