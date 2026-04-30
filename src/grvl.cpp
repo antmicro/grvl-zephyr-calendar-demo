@@ -32,7 +32,7 @@ namespace fs = std::filesystem;
 static constexpr auto WIDTH = DT_PROP(DISPLAY, width);
 static constexpr auto HEIGHT = DT_PROP(DISPLAY, height);
 
-static constexpr auto GRVL_THRD_STACK_SIZE = KB(8);
+static constexpr auto GRVL_THRD_STACK_SIZE = KB(10);
 static constexpr auto GRVL_THRD_PRIORITY = 1;
 
 static constexpr auto TARGET_FRAMERATE = 30;
@@ -330,7 +330,7 @@ static void load_fonts(fs::path &rpath, grvl::Manager &manager)
 static void load_images(fs::path &rpath, grvl::Manager &manager)
 {
 	auto imageContent = [&](const char *path) {
-		return new grvl::ImageContent(grvl::ImageContent::FromPNG((rpath / path).c_str()));
+		return new grvl::ImageContent((rpath / path).c_str(), grvl::Format::AL44);
 	};
 
 	LOG_DBG("Loading images");
