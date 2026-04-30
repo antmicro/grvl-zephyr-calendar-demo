@@ -255,24 +255,6 @@ static uint64_t grvl_get_timestamp()
 	return k_uptime_get();
 }
 
-static void *duk_malloc(void *data, size_t size)
-{
-	LOG_DBG("duk_malloc (size: %d)", size);
-	return malloc(size);
-}
-
-static void *duk_realloc(void *data, void *ptr, size_t size)
-{
-	LOG_DBG("duk_realloc");
-	return realloc(ptr, size);
-}
-
-static void duk_free(void *data, void *ptr)
-{
-	LOG_DBG("duk_free");
-	free(ptr);
-}
-
 static grvl::gui_callbacks_t grvl_callbacks = {
 #if defined(CONFIG_BOARD_STM32H747I_DISCO)
 	.dma_operation = grvl_stm32_dma_operation,
@@ -282,19 +264,13 @@ static grvl::gui_callbacks_t grvl_callbacks = {
 
 	.set_layer_pointer = grvl_set_layer_pointer,
 
-#if defined(CONFIG_DEBUG)
-	.gui_printf =
-		[](const char *text, va_list argList) {
-			vprintf(text, argList);
-			printf("\n");
-		},
-#endif
+	.gui_printf = [](const char *text, va_list argList) {
+		char buffer[256];
+		vsnprintf(buffer, sizeof(buffer), text, argList);
+		LOG_INF("%s", buffer);
+	},
 
 	.get_timestamp = grvl_get_timestamp,
-
-	.duk_alloc_func = duk_malloc,
-	.duk_realloc_func = duk_realloc,
-	.duk_free_func = duk_free,
 };
 
 static int hw_init()
@@ -342,7 +318,10 @@ static void load_fonts(fs::path &rpath, grvl::Manager &manager)
 
 	LOG_DBG("Loading fonts");
 
-	manager.AddFontToFontContainer("mona10", font("fonts/mona10.gbf"));
+	auto mona10 = font("fonts/mona10.gbf");
+
+	manager.AddFontToFontContainer("normal", mona10);
+	manager.AddFontToFontContainer("mona10", mona10);
 	manager.AddFontToFontContainer("mona12", font("fonts/mona12.gbf"));
 	manager.AddFontToFontContainer("mona14", font("fonts/mona14.gbf"));
 	manager.AddFontToFontContainer("mona16", font("fonts/mona16.gbf"));
