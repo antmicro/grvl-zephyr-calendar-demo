@@ -15,13 +15,13 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
-#include <Division.h>
-#include <JSEngine.h>
-#include <Label.h>
-#include <ListView.h>
-#include <Manager.h>
-#include <Misc.h>
-#include <ScrollPanel.h>
+#include <grvl/Division.h>
+#include <grvl/JSEngine.h>
+#include <grvl/Label.h>
+#include <grvl/ListView.h>
+#include <grvl/Manager.h>
+#include <grvl/Misc.h>
+#include <grvl/ScrollPanel.h>
 
 LOG_MODULE_REGISTER(grvl, CONFIG_APP_LOG_LEVEL);
 
