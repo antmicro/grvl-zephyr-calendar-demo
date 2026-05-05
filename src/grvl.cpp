@@ -22,6 +22,7 @@
 #include <grvl/Manager.h>
 #include <grvl/Misc.h>
 #include <grvl/ScrollPanel.h>
+#include <grvl/Blitter.h>
 
 LOG_MODULE_REGISTER(grvl, CONFIG_APP_LOG_LEVEL);
 
@@ -110,10 +111,10 @@ static void dma2d_init()
 	__HAL_RCC_DMA2D_CLK_ENABLE();
 }
 
-static void grvl_stm32_dma_operation(uintptr_t fg_mem, uintptr_t bg_mem, uintptr_t out_mem,
+static void grvl_stm32_dma_blit(uintptr_t fg_mem, uintptr_t bg_mem, uintptr_t out_mem,
 				     uint32_t width, uint32_t height, uint32_t fg_off,
-				     uint32_t bg_off, uint32_t out_off, uint32_t fg_fmt,
-				     uint32_t bg_fmt, uint32_t out_fmt, uint32_t fnt_alpha)
+				     uint32_t bg_off, uint32_t out_off, grvl::Format fg_fmt,
+				     grvl::Format bg_fmt, grvl::Format out_fmt, uint32_t fnt_alpha)
 {
 	int rc;
 
@@ -122,20 +123,20 @@ static void grvl_stm32_dma_operation(uintptr_t fg_mem, uintptr_t bg_mem, uintptr
 
 	hal_dma2d.Init = {
 		.Mode = bg_mem ? DMA2D_M2M_BLEND : DMA2D_M2M_PFC,
-		.ColorMode = out_fmt,
+		.ColorMode = grvl::FormatToDma2d(out_fmt),
 		.OutputOffset = out_off,
 	};
 
 	hal_dma2d.LayerCfg[0] = {
 		.InputOffset = bg_off,
-		.InputColorMode = bg_fmt,
+		.InputColorMode = grvl::FormatToDma2d(bg_fmt),
 		.AlphaMode = DMA2D_NO_MODIF_ALPHA,
 		.InputAlpha = 0xFF,
 	};
 
 	hal_dma2d.LayerCfg[1] = {
 		.InputOffset = fg_off,
-		.InputColorMode = fg_fmt,
+		.InputColorMode = grvl::FormatToDma2d(fg_fmt),
 		.AlphaMode = DMA2D_NO_MODIF_ALPHA,
 		.InputAlpha = fnt_alpha,
 	};
@@ -170,7 +171,7 @@ static void grvl_stm32_dma_operation(uintptr_t fg_mem, uintptr_t bg_mem, uintptr
 }
 
 static void grvl_stm32_dma_fill(uintptr_t out_mem, uint32_t width, uint32_t height, uint32_t off,
-				uint32_t col, uint32_t fmt)
+				uint32_t col, grvl::Format fmt)
 {
 	int rc;
 
@@ -179,7 +180,7 @@ static void grvl_stm32_dma_fill(uintptr_t out_mem, uint32_t width, uint32_t heig
 
 	hal_dma2d.Init = {
 		.Mode = DMA2D_R2M,
-		.ColorMode = fmt,
+		.ColorMode = grvl::FormatToDma2d(fmt),
 		.OutputOffset = off,
 	};
 
@@ -257,9 +258,8 @@ static uint64_t grvl_get_timestamp()
 
 static grvl::gui_callbacks_t grvl_callbacks = {
 #if defined(CONFIG_BOARD_STM32H747I_DISCO)
-	.dma_operation = grvl_stm32_dma_operation,
-	.dma_operation_clt = nullptr,
-	.dma_fill = grvl_stm32_dma_fill,
+	.fill = grvl_stm32_dma_fill,
+	.blit = grvl_stm32_dma_blit,
 #endif
 
 	.set_layer_pointer = grvl_set_layer_pointer,
