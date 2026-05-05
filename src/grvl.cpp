@@ -51,6 +51,7 @@ const static struct device *display_dev = DEVICE_DT_GET(DISPLAY);
 static struct display_buffer_descriptor disp_buf;
 
 static uintptr_t framebuffer;
+static bool dma_in_progress = false;
 
 static grvl::Manager *Manager;
 
@@ -111,6 +112,18 @@ static void dma2d_init()
 	__HAL_RCC_DMA2D_CLK_ENABLE();
 }
 
+static void grvl_wait_for_dma2d()
+{
+	if (dma_in_progress) {
+		if (HAL_DMA2D_PollForTransfer(&hal_dma2d, 100) != HAL_OK) {
+			LOG_ERR("DMA transfer timeout (err %d)", HAL_DMA2D_GetError(&hal_dma2d));
+			return;
+		}
+	}
+
+	dma_in_progress = false;
+}
+
 static void grvl_stm32_dma_blit(uintptr_t fg_mem, uintptr_t bg_mem, uintptr_t out_mem,
 				     uint32_t width, uint32_t height, uint32_t fg_off,
 				     uint32_t bg_off, uint32_t out_off, grvl::Format fg_fmt,
@@ -141,6 +154,8 @@ static void grvl_stm32_dma_blit(uintptr_t fg_mem, uintptr_t bg_mem, uintptr_t ou
 		.InputAlpha = fnt_alpha,
 	};
 
+	grvl_wait_for_dma2d();
+
 	/* DMA2D Initialization */
 	if ((rc = HAL_DMA2D_Init(&hal_dma2d)) != HAL_OK) {
 		LOG_ERR("Failed to initialize DMA transfer (err %d)",
@@ -164,10 +179,7 @@ static void grvl_stm32_dma_blit(uintptr_t fg_mem, uintptr_t bg_mem, uintptr_t ou
 		return;
 	}
 
-	if ((rc = HAL_DMA2D_PollForTransfer(&hal_dma2d, 100)) != HAL_OK) {
-		LOG_ERR("DMA transfer timeout (err %d)", HAL_DMA2D_GetError(&hal_dma2d));
-		return;
-	}
+	dma_in_progress = true;
 }
 
 static void grvl_stm32_dma_fill(uintptr_t out_mem, uint32_t width, uint32_t height, uint32_t off,
@@ -184,6 +196,8 @@ static void grvl_stm32_dma_fill(uintptr_t out_mem, uint32_t width, uint32_t heig
 		.OutputOffset = off,
 	};
 
+	grvl_wait_for_dma2d();
+
 	if ((rc = HAL_DMA2D_Init(&hal_dma2d)) != HAL_OK) {
 		LOG_ERR("Failed to initialize DMA transfer (err %d)",
 			HAL_DMA2D_GetError(&hal_dma2d));
@@ -195,10 +209,7 @@ static void grvl_stm32_dma_fill(uintptr_t out_mem, uint32_t width, uint32_t heig
 		return;
 	}
 
-	if ((rc = HAL_DMA2D_PollForTransfer(&hal_dma2d, 50)) != HAL_OK) {
-		LOG_ERR("DMA transfer timeout (err %d)", HAL_DMA2D_GetError(&hal_dma2d));
-		return;
-	}
+	dma_in_progress = true;
 }
 
 static int board_init()
