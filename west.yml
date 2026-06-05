@@ -15,4 +15,4 @@ manifest:
     - name: grvl
       path: modules/grvl
       remote: antmicro
-      revision: 1f6377953b99d20937d3279b9d197266e5f42ae4
+      revision: 074bc6685f5592152e707af35684387d84196383
