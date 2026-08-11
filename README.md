@@ -49,6 +49,11 @@ $ west patch apply
 $ west build -b <board>
 ```
 
+#### Building for STM32H747I_DISCO
+```sh
+$ west build -b stm32h747i_disco/stm32h747xx/m7
+```
+
 ### Preparing SD card (for hardware builds)
 
 ```sh
